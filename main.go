@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"go/build"
 	"io/ioutil"
-	"strings"
 	"os"
+	"strings"
 )
 
 var (
@@ -47,7 +47,7 @@ func findDeps(path, pkgPath string) {
 
 	for _, filename := range pkg.GoFiles {
 		fmt.Println("pkg.GoFiles", filename)
-		file, err := ioutil.ReadFile(os.Getenv("GOPATH") + "/src/" + pkg.ImportPath + "/" + filename)
+		file, err := ioutil.ReadFile(absPath(filename, pkg.ImportPath))
 		if err != nil {
 			panic(err)
 		}
@@ -60,8 +60,8 @@ func findDeps(path, pkgPath string) {
 
 }
 
-func oracleLookup(pos int, file string, pkg string) {
-	fmt.Printf("oracleLookup(pos %d, file %s, pkg %s)\n", pos, file, pkg)
+func absPath(filename, pkg string) string {
+	return os.Getenv("GOPATH") + "/src/" + pkg + "/" + filename
 }
 
 func indexAll(hay, needle []byte) []int {
