@@ -111,7 +111,7 @@ func drawGraph(path string) {
 	for from, tos := range depmap {
 		for _, to := range tos {
 			fmt.Println(from, "->", to)
-			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") {
+			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") { // fucking ugly hack; oracle has info if this is a stdlib or not; use that instead. Also add filter so pkgs shown can be filtered by regex.
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
 				}
