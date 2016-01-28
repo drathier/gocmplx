@@ -9,11 +9,7 @@ import (
 	"strings"
 )
 
-var (
-	depmap = make(map[string][]string) // depends on
-)
-
-func importPkg(path string) {
+func importPkg(depmap map[string][]string, path string) {
 	if _, found := depmap[path]; found {
 		return // already imported this
 	}
@@ -23,7 +19,7 @@ func importPkg(path string) {
 	}
 	for _, pkg := range pkgs.Imports {
 		depmap[path] = append(depmap[path], pkg)
-		importPkg(pkg)
+		importPkg(depmap, pkg)
 	}
 }
 
@@ -109,8 +105,23 @@ func pkgIdent(pkgpath string) string {
 	return pkgpath[li+1:]
 }
 
-func main() {
+func drawGraph(path string) {
+	depmap := make(map[string][]string) // depends on
+	importPkg(depmap, path)
+	for from, tos := range depmap {
+		for _, to := range tos {
+			fmt.Println(from, "->", to)
+			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") {
+				for _, obj := range findDeps(from, to) {
+					fmt.Println(obj)
+				}
+			}
+		}
+	}
+}
 
+func main() {
+	drawGraph("github.com/drathier/saiph/odb")
 }
 
 /*
