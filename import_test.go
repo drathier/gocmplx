@@ -7,5 +7,5 @@ import (
 
 func TestImport(t *testing.T) {
 	importPkg("go/build")
-	fmt.Println(deps)
+	fmt.Println(depmap)
 }

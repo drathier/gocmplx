@@ -8,8 +8,14 @@ import (
 )
 
 type oracle struct {
-	Mode     string
-	Describe odesc
+	Mode       string
+	Describe   odesc
+	Definition odef
+}
+
+type odef struct {
+	Objpos string
+	Desc   string
 }
 
 type odesc struct {
@@ -31,10 +37,18 @@ type omember struct {
 	Kind string
 }
 
-func oracleLookup(pos int, file string, pkg string) (oracle, error) {
-	fmt.Printf("oracleLookup(pos %d, file %s, pkg %s)\n", pos, file, pkg)
+func oracleDescribe(pos int, file string, pkg string) (oracle, error) {
+	return oracleGen(pos, file, pkg, "describe")
+}
+
+func oracleDefine(pos int, file string, pkg string) (oracle, error) {
+	return oracleGen(pos, file, pkg, "definition")
+}
+
+func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
+	fmt.Printf("oracleDescribe(pos %d, file %s, pkg %s)\n", pos, file, pkg)
 	// call the oracle
-	cmd := exec.Command("oracle", "-format=json", fmt.Sprintf("-pos=%s:#%d", absPath(file, pkg), pos), "describe", pkg)
+	cmd := exec.Command("oracle", "-format=json", fmt.Sprintf("-pos=%s:#%d", absPath(file, pkg), pos), op, pkg)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out

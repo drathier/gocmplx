@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	deps = make(map[string][]string) // depends on
+	depmap = make(map[string][]string) // depends on
 )
 
 func importPkg(path string) {
-	if _, found := deps[path]; found {
+	if _, found := depmap[path]; found {
 		return // already imported this
 	}
 	pkgs, err := build.Import(path, "", 0)
@@ -22,7 +22,7 @@ func importPkg(path string) {
 		panic(err)
 	}
 	for _, pkg := range pkgs.Imports {
-		deps[path] = append(deps[path], pkg)
+		depmap[path] = append(depmap[path], pkg)
 		importPkg(pkg)
 	}
 }
@@ -34,30 +34,52 @@ type dep struct {
 }
 
 // saiph.User depends on gocmplx.Deps; return filename.go:line:col imports filename2.go:line:col type struct{asd string; potato int}
-func findDeps(path, pkgPath string) {
+// path = the package we are in; pkgpath = the package we imported
+func findDeps(ourPath, otherPkg string) []dep {
 	// 1. get package name from pkgPath
-	pkgName := pkgIdent(pkgPath)
+	pkgName := pkgIdent(otherPkg)
 	fmt.Println("pkgName", pkgName)
 
 	// 2. find that package name in source files
-	pkg, err := build.Import(path, "", 0)
+	ourPkg, err := build.Import(ourPath, "", 0)
 	if err != nil {
 		panic(err)
 	}
 
-	for _, filename := range pkg.GoFiles {
+	var depm = make(map[dep]struct{})
+	// check all our source files for references to otherPkg
+	for _, filename := range ourPkg.GoFiles {
 		fmt.Println("pkg.GoFiles", filename)
-		file, err := ioutil.ReadFile(absPath(filename, pkg.ImportPath))
+		file, err := ioutil.ReadFile(absPath(filename, ourPkg.ImportPath))
 		if err != nil {
 			panic(err)
 		}
 		for _, pos := range indexAll(file, []byte(pkgName)) {
-			oracleLookup(pos, filename, path)
+			// 3. check if those matches are in fact pointing to the package
+			oracle, err := oracleDescribe(pos, filename, ourPath)
+			if err != nil {
+				// `ambiguous selection within source file` -> comment
+				// `no identifier here` -> import statement
+				continue // false positive; shadowed variable, string or comment
+			}
+
+			oracleDef, err := oracleDefine(pos+len(pkgName)+1, filename, ourPath)
+			if err != nil {
+				continue // false positive; probably an import statement
+			}
+
+			// 4. add things to result
+			d := dep{from: ourPath, to: oracle.Describe.Pkg.Path, typ: oracleDef.Definition.Desc}
+			depm[d] = struct{}{}
+			fmt.Println("pkg points to dep here, using valid reference; store it for later use")
 		}
 	}
-	// 3. check if those matches are in fact pointing to the package
-	// 4. add things to result
 
+	var deps []dep
+	for d := range depm {
+		deps = append(deps, d)
+	}
+	return deps
 }
 
 func absPath(filename, pkg string) string {
