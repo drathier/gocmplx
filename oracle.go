@@ -45,8 +45,43 @@ func oracleDefine(pos int, file string, pkg string) (oracle, error) {
 	return oracleGen(pos, file, pkg, "definition")
 }
 
+type oracledp struct {
+	pos  int
+	file string
+	pkg  string
+	op   string
+}
+
+type oracledpout struct {
+	o   oracle
+	err error
+}
+
+var mem = make(map[oracledp]oracledpout)
+
 func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
-	fmt.Printf("oracleDescribe(pos %d, file %s, pkg %s)\n", pos, file, pkg)
+	key := oracledp{
+		pos:  pos,
+		file: file,
+		pkg:  pkg,
+		op:   op,
+	}
+
+	if _, found := mem[key]; !found {
+		oracle, err := oracleGenImpl(key.pos, key.file, key.pkg, key.op)
+		res := oracledpout{
+			o:   oracle,
+			err: err,
+		}
+		mem[key] = res
+	}
+
+	ans := mem[key]
+	return ans.o, ans.err
+}
+
+func oracleGenImpl(pos int, file string, pkg string, op string) (oracle, error) {
+	fmt.Printf("oracle_%s(pos %d, file %s, pkg %s)\n", op, pos, file, pkg)
 	// call the oracle
 	cmd := exec.Command("oracle", "-format=json", fmt.Sprintf("-pos=%s:#%d", absPath(file, pkg), pos), op, pkg)
 

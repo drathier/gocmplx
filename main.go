@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/build"
+	"io"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -27,6 +28,7 @@ type dep struct {
 	from string // current file path
 	to   string // oracle describe/package/path
 	typ  string // oracle describe/package/members[i]/type
+	//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
 }
 
 // saiph.User depends on gocmplx.Deps; return filename.go:line:col imports filename2.go:line:col type struct{asd string; potato int}
@@ -59,9 +61,14 @@ func findDeps(ourPath, otherPkg string) []dep {
 				continue // false positive; shadowed variable, string or comment
 			}
 
+
 			oracleDef, err := oracleDefine(pos+len(pkgName)+1, filename, ourPath)
 			if err != nil {
 				continue // false positive; probably an import statement
+			}
+
+			if strings.HasPrefix(oracleDef.Definition.Desc, "var") {
+				continue // variable definition; breaks code; TODO: handle this as well.
 			}
 
 			// 4. add things to result
@@ -70,7 +77,6 @@ func findDeps(ourPath, otherPkg string) []dep {
 			fmt.Println("pkg points to dep here, using valid reference; store it for later use")
 		}
 	}
-
 	var deps []dep
 	for d := range depm {
 		deps = append(deps, d)
@@ -105,23 +111,80 @@ func pkgIdent(pkgpath string) string {
 	return pkgpath[li+1:]
 }
 
-func drawGraph(path string) {
+func drawGraph(in io.WriteCloser, path string) {
 	depmap := make(map[string][]string) // depends on
+
+	fmt.Fprintf(in, "digraph {\n")
+	fmt.Fprintf(in, "\tcompound=true;\n")
+	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+path)
+	fmt.Fprintf(in, "\t\t label=%q;\n", path)
+	fmt.Fprintf(in, "\t\t%q [shape=point, style=invis];\n", path)
+	fmt.Fprintf(in, "\t}\n")
+
+	for from := range depmap {
+		fmt.Fprintf(in, "\t%q [shape=box];\n", from)
+	}
+
+	// list of types inside a package that is used by anyone
+	used := make(map[string][]string)
+
 	importPkg(depmap, path)
 	for from, tos := range depmap {
 		for _, to := range tos {
 			fmt.Println(from, "->", to)
-			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") { // fucking ugly hack; oracle has info if this is a stdlib or not; use that instead. Also add filter so pkgs shown can be filtered by regex.
+			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") && !strings.Contains(from, "couchbase") {
+				//fmt.Fprintf(in, "\t%q -> %q [weight=1];\n", from, to)
+				//continue
+				// fucking ugly hack; oracle has info if this is a stdlib or not; use that instead. Also add filter so pkgs shown can be filtered by regex.
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
+					fmt.Fprintf(in, "\t%q -> %q [ltail=%q];\n", obj.from, obj.typ, "cluster_"+obj.from)
+					used[obj.to] = append(used[obj.to], obj.typ)
 				}
 			}
 		}
 	}
+
+	// subgraphs
+	for pkg, types := range used {
+		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+pkg)
+		fmt.Fprintf(in, "\t\tlabel=%q;\n", pkg)
+		for _, t := range types {
+			fmt.Fprintf(in, "\t\t%q [weight=1];\n", t)
+		}
+		fmt.Fprintf(in, "\t}\n")
+	}
+
+	fmt.Fprintf(in, "}\n")
+	in.Close()
+	fmt.Printf("%#v\n", depmap)
 }
 
 func main() {
-	drawGraph("github.com/drathier/saiph/odb")
+	var err error
+	/*cmd := exec.Command("dot", "-Tsvg")
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		panic(err)
+	}
+	out, err := cmd.StdoutPipe()
+	cmd.Stderr = os.Stderr
+	err = cmd.Start()
+	if err != nil {
+		panic(err)
+	}
+	*/
+	file, err := os.Create("output.gv")
+	if err != nil {
+		panic(err)
+	}
+
+	// stdout for now
+	drawGraph(file, "github.com/drathier/saiph/odb")
+
+	//go browser.OpenReader(out)
+
+	//cmd.Wait()
 }
 
 /*
