@@ -59,7 +59,7 @@ func findDeps(ourPath, otherPkg string) []dep {
 		}
 		for _, pos := range indexAll(file, []byte(pkgName)) {
 			wg.Add(1)
-			go func() {
+			go func(pos int, filename string, outPath string) {
 				depmsema <- struct{}{}
 				defer func() {
 					wg.Done()
@@ -90,7 +90,7 @@ func findDeps(ourPath, otherPkg string) []dep {
 				depm[d] = struct{}{}
 				depmlock.Unlock()
 				fmt.Println("pkg points to dep here, using valid reference; store it for later use")
-			}()
+			}(pos, filename, ourPath)
 		}
 	}
 	wg.Wait()
