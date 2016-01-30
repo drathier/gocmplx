@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sync"
 )
 
 type oracle struct {
@@ -58,6 +59,8 @@ type oracledpout struct {
 }
 
 var mem = make(map[oracledp]oracledpout)
+var memlock = make(map[oracledp]*sync.Once)
+var lock sync.Mutex
 
 func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 	key := oracledp{
@@ -67,14 +70,21 @@ func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 		op:   op,
 	}
 
-	if _, found := mem[key]; !found {
+	lock.Lock()
+	if _, found := memlock[key]; !found {
+		memlock[key] = new(sync.Once)
+	}
+	once := memlock[key]
+	lock.Unlock()
+
+	once.Do(func() {
 		oracle, err := oracleGenImpl(key.pos, key.file, key.pkg, key.op)
 		res := oracledpout{
 			o:   oracle,
 			err: err,
 		}
 		mem[key] = res
-	}
+	})
 
 	ans := mem[key]
 	return ans.o, ans.err

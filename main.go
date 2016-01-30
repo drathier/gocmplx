@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
+	"sync"
 )
 
 func importPkg(depmap map[string][]string, path string) {
@@ -28,7 +29,7 @@ type dep struct {
 	from string // current file path
 	to   string // oracle describe/package/path
 	typ  string // oracle describe/package/members[i]/type
-	//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
+				//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
 }
 
 // saiph.User depends on gocmplx.Deps; return filename.go:line:col imports filename2.go:line:col type struct{asd string; potato int}
@@ -45,6 +46,10 @@ func findDeps(ourPath, otherPkg string) []dep {
 	}
 
 	var depm = make(map[dep]struct{})
+	var depmlock sync.Mutex
+	var depmsema = make(chan struct{}, 16)
+	var wg sync.WaitGroup
+
 	// check all our source files for references to otherPkg
 	for _, filename := range ourPkg.GoFiles {
 		fmt.Println("pkg.GoFiles", filename)
@@ -53,30 +58,42 @@ func findDeps(ourPath, otherPkg string) []dep {
 			panic(err)
 		}
 		for _, pos := range indexAll(file, []byte(pkgName)) {
-			// 3. check if those matches are in fact pointing to the package
-			oracle, err := oracleDescribe(pos, filename, ourPath)
-			if err != nil {
-				// `ambiguous selection within source file` -> comment
-				// `no identifier here` -> import statement
-				continue // false positive; shadowed variable, string or comment
-			}
+			wg.Add(1)
+			go func() {
+				depmsema <- struct{}{}
+				defer func() {
+					wg.Done()
+					<-depmsema
+				}()
 
+				// 3. check if those matches are in fact pointing to the package
+				oracle, err := oracleDescribe(pos, filename, ourPath)
+				if err != nil {
+					// `ambiguous selection within source file` -> comment
+					// `no identifier here` -> import statement
+					return // false positive; shadowed variable, string or comment
+				}
 
-			oracleDef, err := oracleDefine(pos+len(pkgName)+1, filename, ourPath)
-			if err != nil {
-				continue // false positive; probably an import statement
-			}
+				oracleDef, err := oracleDefine(pos + len(pkgName) + 1, filename, ourPath)
+				if err != nil {
+					return // false positive; probably an import statement
+				}
 
-			if strings.HasPrefix(oracleDef.Definition.Desc, "var") {
-				continue // variable definition; breaks code; TODO: handle this as well.
-			}
+				if strings.HasPrefix(oracleDef.Definition.Desc, "var") {
+					return // variable definition; breaks code; TODO: handle this as well.
+				}
 
-			// 4. add things to result
-			d := dep{from: ourPath, to: oracle.Describe.Pkg.Path, typ: oracleDef.Definition.Desc}
-			depm[d] = struct{}{}
-			fmt.Println("pkg points to dep here, using valid reference; store it for later use")
+				// 4. add things to result
+				d := dep{from: ourPath, to: oracle.Describe.Pkg.Path, typ: oracleDef.Definition.Desc}
+
+				depmlock.Lock()
+				depm[d] = struct{}{}
+				depmlock.Unlock()
+				fmt.Println("pkg points to dep here, using valid reference; store it for later use")
+			}()
 		}
 	}
+	wg.Wait()
 	var deps []dep
 	for d := range depm {
 		deps = append(deps, d)
@@ -97,7 +114,7 @@ func indexAll(hay, needle []byte) []int {
 		if i < 0 {
 			break
 		}
-		indices = append(indices, from+i)
+		indices = append(indices, from + i)
 		from = from + i + 1
 	}
 	return indices
@@ -108,7 +125,7 @@ func pkgIdent(pkgpath string) string {
 	if li == -1 {
 		return pkgpath
 	}
-	return pkgpath[li+1:]
+	return pkgpath[li + 1:]
 }
 
 func drawGraph(in io.WriteCloser, path string) {
@@ -116,7 +133,7 @@ func drawGraph(in io.WriteCloser, path string) {
 
 	fmt.Fprintf(in, "digraph {\n")
 	fmt.Fprintf(in, "\tcompound=true;\n")
-	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+path)
+	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + path)
 	fmt.Fprintf(in, "\t\t label=%q;\n", path)
 	fmt.Fprintf(in, "\t\t%q [shape=point, style=invis];\n", path)
 	fmt.Fprintf(in, "\t}\n")
@@ -138,7 +155,7 @@ func drawGraph(in io.WriteCloser, path string) {
 				// fucking ugly hack; oracle has info if this is a stdlib or not; use that instead. Also add filter so pkgs shown can be filtered by regex.
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
-					fmt.Fprintf(in, "\t%q -> %q [ltail=%q];\n", obj.from, obj.typ, "cluster_"+obj.from)
+					fmt.Fprintf(in, "\t%q -> %q [ltail=%q];\n", obj.from, obj.typ, "cluster_" + obj.from)
 					used[obj.to] = append(used[obj.to], obj.typ)
 				}
 			}
@@ -147,7 +164,7 @@ func drawGraph(in io.WriteCloser, path string) {
 
 	// subgraphs
 	for pkg, types := range used {
-		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+pkg)
+		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + pkg)
 		fmt.Fprintf(in, "\t\tlabel=%q;\n", pkg)
 		for _, t := range types {
 			fmt.Fprintf(in, "\t\t%q [weight=1];\n", t)
