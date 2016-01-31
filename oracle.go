@@ -75,6 +75,7 @@ func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 		memlock[key] = new(sync.Once)
 	}
 	once := memlock[key]
+	lock.Unlock()
 
 	once.Do(func() {
 		oracle, err := oracleGenImpl(key.pos, key.file, key.pkg, key.op)
@@ -82,9 +83,12 @@ func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 			o:   oracle,
 			err: err,
 		}
+		lock.Lock()
 		mem[key] = res
+		lock.Unlock()
 	})
 
+	lock.Lock()
 	ans := mem[key]
 	lock.Unlock()
 	return ans.o, ans.err

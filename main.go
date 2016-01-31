@@ -7,8 +7,18 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+)
+
+var (
+	trimStructs bool = true
+	graphStdlib bool = false
+)
+
+var (
+	match = regexp.MustCompile(`github.com/drathier/saiph`)
 )
 
 func importPkg(depmap map[string][]string, path string) {
@@ -29,7 +39,7 @@ type dep struct {
 	from string // current file path
 	to   string // oracle describe/package/path
 	typ  string // oracle describe/package/members[i]/type
-				//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
+	//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
 }
 
 // saiph.User depends on gocmplx.Deps; return filename.go:line:col imports filename2.go:line:col type struct{asd string; potato int}
@@ -59,8 +69,8 @@ func findDeps(ourPath, otherPkg string) []dep {
 		}
 		for _, pos := range indexAll(file, []byte(pkgName)) {
 			wg.Add(1)
+			depmsema <- struct{}{}
 			go func(pos int, filename string, outPath string) {
-				depmsema <- struct{}{}
 				defer func() {
 					wg.Done()
 					<-depmsema
@@ -74,7 +84,7 @@ func findDeps(ourPath, otherPkg string) []dep {
 					return // false positive; shadowed variable, string or comment
 				}
 
-				oracleDef, err := oracleDefine(pos + len(pkgName) + 1, filename, ourPath)
+				oracleDef, err := oracleDefine(pos+len(pkgName)+1, filename, ourPath)
 				if err != nil {
 					return // false positive; probably an import statement
 				}
@@ -114,7 +124,7 @@ func indexAll(hay, needle []byte) []int {
 		if i < 0 {
 			break
 		}
-		indices = append(indices, from + i)
+		indices = append(indices, from+i)
 		from = from + i + 1
 	}
 	return indices
@@ -125,16 +135,17 @@ func pkgIdent(pkgpath string) string {
 	if li == -1 {
 		return pkgpath
 	}
-	return pkgpath[li + 1:]
+	return pkgpath[li+1:]
 }
 
 func drawGraph(in io.WriteCloser, path string) {
 	depmap := make(map[string][]string) // depends on
 
-	fmt.Fprintf(in, "digraph {\n")
+	fmt.Fprintf(in, "digraph %q {\n", path)
+	fmt.Fprintf(in, "\tgraph [ranksep=2];\n")
 	fmt.Fprintf(in, "\tcompound=true;\n")
-	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + path)
-	fmt.Fprintf(in, "\t\t label=%q;\n", path)
+	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+path)
+	fmt.Fprintf(in, "\t\tlabel=%q;\n", path)
 	fmt.Fprintf(in, "\t\t%q [shape=point, style=invis];\n", path)
 	fmt.Fprintf(in, "\t}\n")
 
@@ -145,27 +156,86 @@ func drawGraph(in io.WriteCloser, path string) {
 	// list of types inside a package that is used by anyone
 	used := make(map[string][]string)
 
+	fmt.Fprintf(in, "\n\t// dependencies to types, variables etc.\n")
 	importPkg(depmap, path)
 	for from, tos := range depmap {
 		for _, to := range tos {
 			fmt.Println(from, "->", to)
-			if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") && !strings.Contains(from, "couchbase") {
-				//fmt.Fprintf(in, "\t%q -> %q [weight=1];\n", from, to)
-				//continue
-				// fucking ugly hack; oracle has info if this is a stdlib or not; use that instead. Also add filter so pkgs shown can be filtered by regex.
+			//if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") && !strings.Contains(from, "couchbase") {
+			if graphStdlib || !isStdlib(from) {
+				if !match.MatchString(from) {
+					continue
+				}
+				// TODO Add filter so pkgs shown can be filtered by regex.
+
+			nextDep:
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
-					fmt.Fprintf(in, "\t%q -> %q [ltail=%q];\n", obj.from, obj.typ, "cluster_" + obj.from)
+
+					// clear out redundant path
+					obj.typ = strings.Replace(obj.typ, obj.to+".", "", -1)
+					if trimStructs {
+						i := strings.Index(obj.typ, "struct{")
+						if i >= 0 {
+							obj.typ = obj.typ[:i+len("struct{")] + "...}"
+						}
+					}
+
+					for f, ts := range used {
+						for _, t := range ts {
+							if f == obj.from && t == obj.to {
+								fmt.Println("already handled", obj.from, "->", obj.to)
+								continue nextDep
+							}
+						}
+					}
+
+					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q];\n", obj.from, obj.typ, color(obj.from), "cluster_"+obj.from)
 					used[obj.to] = append(used[obj.to], obj.typ)
+					if _, found := used[obj.from]; !found {
+						used[obj.from] = []string{}
+					}
 				}
 			}
 		}
 	}
 
+	// deduplicate
+	for k, vs := range used {
+		m := make(map[string]struct{})
+		var nvs []string
+		for _, v := range vs {
+			if _, found := m[v]; found {
+				continue
+			}
+			m[v] = struct{}{}
+			nvs = append(nvs, v)
+		}
+		used[k] = nvs
+	}
+
+	fmt.Fprintf(in, "\n\t// edges for empty imports\n")
+	// add dependency edges for packages that include other packages, but don't use anything in them, i.e. underscore imports
+	for from, tos := range depmap {
+		if graphStdlib || !isStdlib(from) {
+			if !match.MatchString(from) {
+				continue
+			}
+			for _, to := range tos {
+				if _, found := used[from]; !found {
+					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q, lhead=%q, style=dashed];\n", from, to, color(from), "cluster_"+from, "cluster_"+to)
+				}
+			}
+		}
+	}
+
+	fmt.Fprintf(in, "\n\t// subgraphs\n")
 	// subgraphs
 	for pkg, types := range used {
-		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + pkg)
+		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+pkg)
 		fmt.Fprintf(in, "\t\tlabel=%q;\n", pkg)
+		fmt.Fprintf(in, "\t\tcolor=%q;\n", color(pkg))
+		fmt.Fprintf(in, "\t\t%q [weight=0, shape=point, style=invis];\n", pkg)
 		for _, t := range types {
 			fmt.Fprintf(in, "\t\t%q [weight=1];\n", t)
 		}
@@ -197,7 +267,7 @@ func main() {
 	}
 
 	// stdout for now
-	drawGraph(file, "github.com/drathier/saiph/odb")
+	drawGraph(file, "github.com/drathier/saiph/grammar/handlers")
 
 	//go browser.OpenReader(out)
 
@@ -236,6 +306,16 @@ By searching the source files as strings for whatever the package import stateme
 
 
 
+
+
+*/
+
+/*
+FIXME: these cases
+struct ... rule:
+- type State interface{Done() <-chan struct{...}
+
+a includes b but does not use anything in b
 
 
 */
