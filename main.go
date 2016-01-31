@@ -172,15 +172,6 @@ func drawGraph(in io.WriteCloser, path string) {
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
 
-					// clear out redundant path
-					obj.typ = strings.Replace(obj.typ, obj.to+".", "", -1)
-					if trimStructs {
-						i := strings.Index(obj.typ, "struct{")
-						if i >= 0 {
-							obj.typ = obj.typ[:i+len("struct{")] + "...}"
-						}
-					}
-
 					for f, ts := range used {
 						for _, t := range ts {
 							if f == obj.from && t == obj.to {
@@ -237,7 +228,35 @@ func drawGraph(in io.WriteCloser, path string) {
 		fmt.Fprintf(in, "\t\tcolor=%q;\n", color(pkg))
 		fmt.Fprintf(in, "\t\t%q [weight=0, shape=point, style=invis];\n", pkg)
 		for _, t := range types {
-			fmt.Fprintf(in, "\t\t%q [weight=1];\n", t)
+			// clear out redundant path
+			// last dot in type marks delim; remove before that
+
+			fmt.Println("stripping", t)
+			label := t
+			mid := strings.Index(label, " ") + 1
+			fmt.Println("mid", mid)
+			endmid := mid + strings.IndexAny(label[mid+1:], " (") + 1
+			fmt.Println("endmid", endmid)
+
+			if trimStructs {
+				if strings.HasPrefix(strings.TrimSpace(label[endmid:]), "struct{") {
+					label = label[:endmid] + "struct{...}"
+				}
+			}
+			fmt.Println("trimmed struct", t, "->", label)
+
+			li := strings.LastIndex(label[mid:endmid], ".")
+			if li >= 0 {
+				fmt.Println("lastindex", li)
+				label = label[:mid] + label[mid+li+1:]
+			}
+
+			// remove pkg path, if it's in the same pkg
+			label = strings.Replace(label, t[mid:endmid]+".", "", -1)
+
+			fmt.Println("stripped", t, "->", label)
+
+			fmt.Fprintf(in, "\t\t%q [weight=1, label=%q];\n", t, label)
 		}
 		fmt.Fprintf(in, "\t}\n")
 	}
@@ -306,16 +325,6 @@ By searching the source files as strings for whatever the package import stateme
 
 
 
-
-
-*/
-
-/*
-FIXME: these cases
-struct ... rule:
-- type State interface{Done() <-chan struct{...}
-
-a includes b but does not use anything in b
 
 
 */
