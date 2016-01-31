@@ -149,12 +149,9 @@ func drawGraph(in io.WriteCloser, path string) {
 	fmt.Fprintf(in, "\t\t%q [shape=point, style=invis];\n", path)
 	fmt.Fprintf(in, "\t}\n")
 
-	for from := range depmap {
-		fmt.Fprintf(in, "\t%q [shape=box];\n", from)
-	}
-
 	// list of types inside a package that is used by anyone
 	used := make(map[string][]string)
+	seen := make(map[dep]struct{})
 
 	fmt.Fprintf(in, "\n\t// dependencies to types, variables etc.\n")
 	importPkg(depmap, path)
@@ -172,14 +169,10 @@ func drawGraph(in io.WriteCloser, path string) {
 				for _, obj := range findDeps(from, to) {
 					fmt.Println(obj)
 
-					for f, ts := range used {
-						for _, t := range ts {
-							if f == obj.from && t == obj.to {
-								fmt.Println("already handled", obj.from, "->", obj.to)
-								continue nextDep
-							}
-						}
+					if _, found := seen[obj]; found {
+						continue nextDep
 					}
+					seen[obj] = struct{}{}
 
 					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q];\n", obj.from, obj.typ, color(obj.from), "cluster_"+obj.from)
 					used[obj.to] = append(used[obj.to], obj.typ)
@@ -189,20 +182,6 @@ func drawGraph(in io.WriteCloser, path string) {
 				}
 			}
 		}
-	}
-
-	// deduplicate
-	for k, vs := range used {
-		m := make(map[string]struct{})
-		var nvs []string
-		for _, v := range vs {
-			if _, found := m[v]; found {
-				continue
-			}
-			m[v] = struct{}{}
-			nvs = append(nvs, v)
-		}
-		used[k] = nvs
 	}
 
 	fmt.Fprintf(in, "\n\t// edges for empty imports\n")
@@ -252,7 +231,7 @@ func drawGraph(in io.WriteCloser, path string) {
 			}
 
 			// remove pkg path, if it's in the same pkg
-			label = strings.Replace(label, t[mid:endmid]+".", "", -1)
+			label = strings.Replace(label, t[mid:mid+li+1], "", -1)
 
 			fmt.Println("stripped", t, "->", label)
 
@@ -263,7 +242,7 @@ func drawGraph(in io.WriteCloser, path string) {
 
 	fmt.Fprintf(in, "}\n")
 	in.Close()
-	fmt.Printf("%#v\n", depmap)
+	fmt.Printf("depmap: %#v\n", depmap)
 }
 
 func main() {
@@ -287,6 +266,7 @@ func main() {
 
 	// stdout for now
 	drawGraph(file, "github.com/drathier/saiph/grammar/handlers")
+	//drawGraph(file, "github.com/drathier/saiph/grammar/parser")
 
 	//go browser.OpenReader(out)
 
@@ -326,5 +306,12 @@ By searching the source files as strings for whatever the package import stateme
 
 
 
+
+*/
+
+/*
+
+FIXME:
+missing label on anaconda; imported by others, but does not import anything itself
 
 */
