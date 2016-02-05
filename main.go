@@ -20,17 +20,20 @@ var (
 	noTrimStructs *bool
 	graphStdlib   *bool
 	skipStdlib    *bool
-	ranksep *int
+	includeExtlibs *bool
+	ranksep       *int
 )
 
 func main() {
 	noTrimStructs = flag.Bool("noTrimStructs", false, "don't trim the contents of big structs to save space")
+	includeExtlibs = flag.Bool("includeExtlibs", false, "include external libraries deeper than edge")
 	stdlib := flag.String("graphStdlib", "edge", "graph standard library as well? yes, no or edge, where edge stops when it encounters a standard library.")
 
-	excludeReg := flag.String("exclude", "", "exclude packages matching this regex") // defaults to never-matching regexp
+	excludeReg := flag.String("exclude", "", "exclude packages matching this regex")    // defaults to never-matching regexp
+	matchReg := flag.String("match", ".*", "only include packages matching this regex") // defaults to always-matching regexp
 	output := flag.String("output", "", "filename to output graphviz file to, such as graph.gv")
 
-	ranksep = flag.Int("ranksep", "2", "distance between nodes in the graph")
+	ranksep = flag.Int("ranksep", 2, "distance between nodes in the graph")
 
 	x := false
 	graphStdlib = &x
@@ -60,7 +63,9 @@ func main() {
 		log.Fatalln("unknown graphStdlib value, expected 'yes', 'no' or 'edge'")
 	}
 
-	match = regexp.MustCompile(pkg[0])
+	if *matchReg != "" {
+		match = regexp.MustCompile(*matchReg)
+	}
 	if *excludeReg != "" {
 		exclude = regexp.MustCompile(*excludeReg)
 	}
@@ -166,7 +171,7 @@ func findDeps(ourPath, otherPkg string) []dep {
 					return // false positive; shadowed variable, string or comment
 				}
 
-				oracleDef, err := oracleDefine(pos+len(pkgName)+1, filename, ourPath)
+				oracleDef, err := oracleDefine(pos + len(pkgName) + 1, filename, ourPath)
 				if err != nil {
 					return // false positive; probably an import statement
 				}
@@ -206,7 +211,7 @@ func indexAll(hay, needle []byte) []int {
 		if i < 0 {
 			break
 		}
-		indices = append(indices, from+i)
+		indices = append(indices, from + i)
 		from = from + i + 1
 	}
 	return indices
@@ -217,7 +222,7 @@ func pkgIdent(pkgpath string) string {
 	if li == -1 {
 		return pkgpath
 	}
-	return pkgpath[li+1:]
+	return pkgpath[li + 1:]
 }
 
 func drawGraph(in io.Writer, path string) {
@@ -226,7 +231,7 @@ func drawGraph(in io.Writer, path string) {
 	fmt.Fprintf(in, "digraph %q {\n", path)
 	fmt.Fprintf(in, "\tgraph [ranksep=%d];\n", *ranksep)
 	fmt.Fprintf(in, "\tcompound=true;\n")
-	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+path)
+	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + path)
 	fmt.Fprintf(in, "\t\tlabel=%q;\n", path)
 	fmt.Fprintf(in, "\t\t%q [shape=point, style=invis];\n", path)
 	fmt.Fprintf(in, "\t}\n")
@@ -238,30 +243,39 @@ func drawGraph(in io.Writer, path string) {
 	fmt.Fprintf(in, "\n\t// dependencies to types, variables etc.\n")
 	importPkg(depmap, path)
 	for from, tos := range depmap {
+		if !*includeExtlibs && !isStdlib(from) && !strings.HasPrefix(from, path) {
+			log.Println("skipping extlib", from, path)
+			continue
+		}
 		for _, to := range tos {
 			fmt.Println(from, "->", to)
 			//if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") && !strings.Contains(from, "couchbase") {
-			if *graphStdlib || !isStdlib(from) {
-				if !match.MatchString(from) || *skipStdlib || (exclude != nil && exclude.MatchString(from)) {
-					continue
-				}
-				// TODO Add filter so pkgs shown can be filtered by regex.
-
+			switch {
+			case !*graphStdlib && isStdlib(from): // only plot edge
+				continue
+			case !match.MatchString(to):
+				continue
+			case isStdlib(to) && *skipStdlib: // don't plot any stdlib
+				continue
+			case exclude != nil && exclude.MatchString(from):
+				continue
+			}
+			log.Println("ok", from, "->", to)
+			// TODO Add filter so pkgs shown can be filtered by regex.
 			nextDep:
-				for _, obj := range findDeps(from, to) {
-					fmt.Println(obj)
+			for _, obj := range findDeps(from, to) {
+				fmt.Println(obj)
 
-					if _, found := seen[obj]; found {
-						continue nextDep
-					}
-					seen[obj] = struct{}{}
+				if _, found := seen[obj]; found {
+					continue nextDep
+				}
+				seen[obj] = struct{}{}
 
-					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q];\n", obj.from, obj.typ, color(obj.from), "cluster_"+obj.from)
-					used[obj.to] = append(used[obj.to], obj.typ)
-				}
-				if _, found := used[from]; !found {
-					used[from] = []string{}
-				}
+				fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q];\n", obj.from, obj.typ, color(obj.from), "cluster_" + obj.from)
+				used[obj.to] = append(used[obj.to], obj.typ)
+			}
+			if _, found := used[from]; !found {
+				used[from] = []string{}
 			}
 		}
 	}
@@ -269,13 +283,24 @@ func drawGraph(in io.Writer, path string) {
 	fmt.Fprintf(in, "\n\t// edges for empty imports\n")
 	// add dependency edges for packages that include other packages, but don't use anything in them, i.e. underscore imports
 	for from, tos := range depmap {
+		if !*includeExtlibs && !isStdlib(from) && !strings.HasPrefix(from, path) {
+			log.Println("skipping extlib", from, path)
+			continue
+		}
 		if *graphStdlib || !isStdlib(from) {
-			if !match.MatchString(from) || *skipStdlib || (exclude != nil && exclude.MatchString(from)) {
-				continue
-			}
 			for _, to := range tos {
+				switch {
+				case !*graphStdlib && isStdlib(from): // only plot edge
+					continue
+				case !match.MatchString(to):
+					continue
+				case isStdlib(to) && *skipStdlib: // don't plot any stdlib
+					continue
+				case exclude != nil && exclude.MatchString(from):
+					continue
+				}
 				if _, found := used[from]; !found {
-					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q, lhead=%q, style=dashed];\n", from, to, color(from), "cluster_"+from, "cluster_"+to)
+					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q, lhead=%q, style=dashed];\n", from, to, color(from), "cluster_" + from, "cluster_" + to)
 				}
 			}
 		}
@@ -287,7 +312,7 @@ func drawGraph(in io.Writer, path string) {
 		if pkg == "" {
 			pkg = "unknown package(s)"
 		}
-		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+pkg)
+		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_" + pkg)
 		fmt.Fprintf(in, "\t\tlabel=%q;\n", pkg)
 		fmt.Fprintf(in, "\t\tcolor=%q;\n", color(pkg))
 		fmt.Fprintf(in, "\t\t%q [weight=0, shape=point, style=invis];\n", pkg)
@@ -299,7 +324,7 @@ func drawGraph(in io.Writer, path string) {
 			label := t
 			mid := strings.Index(label, " ") + 1
 			fmt.Println("mid", mid)
-			endmid := mid + strings.IndexAny(label[mid+1:], " (") + 1
+			endmid := mid + strings.IndexAny(label[mid + 1:], " (") + 1
 			fmt.Println("endmid", endmid)
 
 			if !*noTrimStructs {
@@ -312,11 +337,11 @@ func drawGraph(in io.Writer, path string) {
 			li := strings.LastIndex(label[mid:endmid], ".")
 			if li >= 0 {
 				fmt.Println("lastindex", li)
-				label = label[:mid] + label[mid+li+1:]
+				label = label[:mid] + label[mid + li + 1:]
 			}
 
 			// remove pkg path, if it's in the same pkg
-			label = strings.Replace(label, t[mid:mid+li+1], "", -1)
+			label = strings.Replace(label, t[mid:mid + li + 1], "", -1)
 
 			fmt.Println("stripped", t, "->", label)
 
