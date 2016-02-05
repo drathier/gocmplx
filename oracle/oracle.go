@@ -1,9 +1,10 @@
-package main
+package oracle
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/drathier/gocmplx/util"
 	"os/exec"
 	"sync"
 )
@@ -38,12 +39,12 @@ type omember struct {
 	Kind string
 }
 
-func oracleDescribe(pos int, file string, pkg string) (oracle, error) {
-	return oracleGen(pos, file, pkg, "describe")
+func Describe(pos int, file string, pkg string) (oracle, error) {
+	return gen(pos, file, pkg, "describe")
 }
 
-func oracleDefine(pos int, file string, pkg string) (oracle, error) {
-	return oracleGen(pos, file, pkg, "definition")
+func Define(pos int, file string, pkg string) (oracle, error) {
+	return gen(pos, file, pkg, "definition")
 }
 
 type oracledp struct {
@@ -62,7 +63,8 @@ var mem = make(map[oracledp]oracledpout)
 var memlock = make(map[oracledp]*sync.Once)
 var lock sync.Mutex
 
-func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
+// gen is a thread-safe memoization wrapper around genImpl
+func gen(pos int, file string, pkg string, op string) (oracle, error) {
 	key := oracledp{
 		pos:  pos,
 		file: file,
@@ -78,7 +80,7 @@ func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 	lock.Unlock()
 
 	once.Do(func() {
-		oracle, err := oracleGenImpl(key.pos, key.file, key.pkg, key.op)
+		oracle, err := genImpl(key.pos, key.file, key.pkg, key.op)
 		res := oracledpout{
 			o:   oracle,
 			err: err,
@@ -94,10 +96,11 @@ func oracleGen(pos int, file string, pkg string, op string) (oracle, error) {
 	return ans.o, ans.err
 }
 
-func oracleGenImpl(pos int, file string, pkg string, op string) (oracle, error) {
+// genImpl executes the calls to oracle
+func genImpl(pos int, file string, pkg string, op string) (oracle, error) {
 	fmt.Printf("oracle_%s(pos %d, file %s, pkg %s)\n", op, pos, file, pkg)
 	// call the oracle
-	cmd := exec.Command("oracle", "-format=json", fmt.Sprintf("-pos=%s:#%d", absPath(file, pkg), pos), op, pkg)
+	cmd := exec.Command("oracle", "-format=json", fmt.Sprintf("-pos=%s:#%d", util.AbsPath(file, pkg), pos), op, pkg)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
