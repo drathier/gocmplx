@@ -2,23 +2,106 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
+	"github.com/pkg/browser"
 	"go/build"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
 )
 
 var (
-	trimStructs bool = true
-	graphStdlib bool = false
+	noTrimStructs *bool
+	graphStdlib   *bool
+	skipStdlib    *bool
+	ranksep *int
 )
 
+func main() {
+	noTrimStructs = flag.Bool("noTrimStructs", false, "don't trim the contents of big structs to save space")
+	stdlib := flag.String("graphStdlib", "edge", "graph standard library as well? yes, no or edge, where edge stops when it encounters a standard library.")
+
+	excludeReg := flag.String("exclude", "", "exclude packages matching this regex") // defaults to never-matching regexp
+	output := flag.String("output", "", "filename to output graphviz file to, such as graph.gv")
+
+	ranksep = flag.Int("ranksep", "2", "distance between nodes in the graph")
+
+	x := false
+	graphStdlib = &x
+
+	y := false
+	skipStdlib = &y
+
+	flag.Parse()
+	pkg := flag.Args()
+
+	if len(pkg) != 1 {
+		fmt.Println("expected 1 argument, got", len(pkg))
+		return
+	}
+
+	switch *stdlib {
+	case "yes":
+		*graphStdlib = true
+		*skipStdlib = false
+	case "edge":
+		*graphStdlib = false
+		*skipStdlib = false
+	case "no":
+		*graphStdlib = false
+		*skipStdlib = true
+	default:
+		log.Fatalln("unknown graphStdlib value, expected 'yes', 'no' or 'edge'")
+	}
+
+	match = regexp.MustCompile(pkg[0])
+	if *excludeReg != "" {
+		exclude = regexp.MustCompile(*excludeReg)
+	}
+
+	var err error
+	cmd := exec.Command("dot", "-Tsvg")
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		panic(err)
+	}
+	out, err := cmd.StdoutPipe()
+	cmd.Stderr = os.Stderr
+	err = cmd.Start()
+	if err != nil {
+		panic(err)
+	}
+
+	inp := io.MultiWriter(in)
+
+	if *output != "" {
+		file, err := os.Create(*output)
+		if err != nil {
+			panic(err)
+		}
+		inp = io.MultiWriter(in, file)
+	}
+
+	// stdout for now
+	drawGraph(inp, pkg[0])
+
+	in.Close()
+	//drawGraph(file, "github.com/drathier/saiph/grammar/parser")
+
+	go browser.OpenReader(out)
+
+	cmd.Wait()
+}
+
 var (
-	match = regexp.MustCompile(`github.com/drathier/saiph`)
+	match   *regexp.Regexp
+	exclude *regexp.Regexp
 )
 
 func importPkg(depmap map[string][]string, path string) {
@@ -39,7 +122,6 @@ type dep struct {
 	from string // current file path
 	to   string // oracle describe/package/path
 	typ  string // oracle describe/package/members[i]/type
-	//toIsStdlib bool   // is "to" a stdlib? FIXME: implement this; ask the oracle or something
 }
 
 // saiph.User depends on gocmplx.Deps; return filename.go:line:col imports filename2.go:line:col type struct{asd string; potato int}
@@ -57,7 +139,7 @@ func findDeps(ourPath, otherPkg string) []dep {
 
 	var depm = make(map[dep]struct{})
 	var depmlock sync.Mutex
-	var depmsema = make(chan struct{}, 16)
+	var depmsema = make(chan struct{}, 64)
 	var wg sync.WaitGroup
 
 	// check all our source files for references to otherPkg
@@ -138,11 +220,11 @@ func pkgIdent(pkgpath string) string {
 	return pkgpath[li+1:]
 }
 
-func drawGraph(in io.WriteCloser, path string) {
+func drawGraph(in io.Writer, path string) {
 	depmap := make(map[string][]string) // depends on
 
 	fmt.Fprintf(in, "digraph %q {\n", path)
-	fmt.Fprintf(in, "\tgraph [ranksep=2];\n")
+	fmt.Fprintf(in, "\tgraph [ranksep=%d];\n", *ranksep)
 	fmt.Fprintf(in, "\tcompound=true;\n")
 	fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+path)
 	fmt.Fprintf(in, "\t\tlabel=%q;\n", path)
@@ -159,8 +241,8 @@ func drawGraph(in io.WriteCloser, path string) {
 		for _, to := range tos {
 			fmt.Println(from, "->", to)
 			//if strings.HasPrefix(from, "github.com") && strings.HasPrefix(to, "github.com") && !strings.Contains(from, "couchbase") {
-			if graphStdlib || !isStdlib(from) {
-				if !match.MatchString(from) {
+			if *graphStdlib || !isStdlib(from) {
+				if !match.MatchString(from) || *skipStdlib || (exclude != nil && exclude.MatchString(from)) {
 					continue
 				}
 				// TODO Add filter so pkgs shown can be filtered by regex.
@@ -176,9 +258,9 @@ func drawGraph(in io.WriteCloser, path string) {
 
 					fmt.Fprintf(in, "\t%q -> %q [color=%q, ltail=%q];\n", obj.from, obj.typ, color(obj.from), "cluster_"+obj.from)
 					used[obj.to] = append(used[obj.to], obj.typ)
-					if _, found := used[obj.from]; !found {
-						used[obj.from] = []string{}
-					}
+				}
+				if _, found := used[from]; !found {
+					used[from] = []string{}
 				}
 			}
 		}
@@ -187,8 +269,8 @@ func drawGraph(in io.WriteCloser, path string) {
 	fmt.Fprintf(in, "\n\t// edges for empty imports\n")
 	// add dependency edges for packages that include other packages, but don't use anything in them, i.e. underscore imports
 	for from, tos := range depmap {
-		if graphStdlib || !isStdlib(from) {
-			if !match.MatchString(from) {
+		if *graphStdlib || !isStdlib(from) {
+			if !match.MatchString(from) || *skipStdlib || (exclude != nil && exclude.MatchString(from)) {
 				continue
 			}
 			for _, to := range tos {
@@ -202,6 +284,9 @@ func drawGraph(in io.WriteCloser, path string) {
 	fmt.Fprintf(in, "\n\t// subgraphs\n")
 	// subgraphs
 	for pkg, types := range used {
+		if pkg == "" {
+			pkg = "unknown package(s)"
+		}
 		fmt.Fprintf(in, "\tsubgraph %q {\n", "cluster_"+pkg)
 		fmt.Fprintf(in, "\t\tlabel=%q;\n", pkg)
 		fmt.Fprintf(in, "\t\tcolor=%q;\n", color(pkg))
@@ -217,9 +302,9 @@ func drawGraph(in io.WriteCloser, path string) {
 			endmid := mid + strings.IndexAny(label[mid+1:], " (") + 1
 			fmt.Println("endmid", endmid)
 
-			if trimStructs {
+			if !*noTrimStructs {
 				if strings.HasPrefix(strings.TrimSpace(label[endmid:]), "struct{") {
-					label = label[:endmid] + "struct{...}"
+					label = label[:endmid] + " struct{...}"
 				}
 			}
 			fmt.Println("trimmed struct", t, "->", label)
@@ -241,36 +326,7 @@ func drawGraph(in io.WriteCloser, path string) {
 	}
 
 	fmt.Fprintf(in, "}\n")
-	in.Close()
 	fmt.Printf("depmap: %#v\n", depmap)
-}
-
-func main() {
-	var err error
-	/*cmd := exec.Command("dot", "-Tsvg")
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		panic(err)
-	}
-	out, err := cmd.StdoutPipe()
-	cmd.Stderr = os.Stderr
-	err = cmd.Start()
-	if err != nil {
-		panic(err)
-	}
-	*/
-	file, err := os.Create("output.gv")
-	if err != nil {
-		panic(err)
-	}
-
-	// stdout for now
-	drawGraph(file, "github.com/drathier/saiph/grammar/handlers")
-	//drawGraph(file, "github.com/drathier/saiph/grammar/parser")
-
-	//go browser.OpenReader(out)
-
-	//cmd.Wait()
 }
 
 /*
